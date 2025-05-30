@@ -1,0 +1,830 @@
+#include <GL/freeglut.h>
+#include <cstdlib>
+#include <algorithm> 
+
+// 회전 각도
+float rotX = 0.0f, rotY = 0.0f, rotZ = 0.0f;
+
+// 카메라 위치(구면좌표)
+float cameraDistance = 5.0f;
+float cameraAngleX = 20.0f; // 위아래(피치)
+float cameraAngleY = 30.0f; // 좌우(요)
+
+// 마우스 드래그 상태
+int prevMouseX = 0, prevMouseY = 0;
+bool mouseDragging = false;
+
+// 큐브 위치
+float posX = 0.0f, posY = 0.0f, posZ = 0.0f;
+
+// 수평면의 y 위치
+const float planeY = -1.0f;
+
+// --- [추가] 함수 선언(프로토타입) ---
+void getRotationMatrix(float rotX, float rotY, float rotZ, float mat[16]);
+
+// --- [추가] 3D 위치에 텍스트 출력 함수 ---
+void drawBitmapText(const char* str, float x, float y, float z);
+
+// --- [추가] 강조 효과가 있는 텍스트 출력 함수 (배경 사각형) ---
+// 함수 선언(프로토타입) 추가
+void drawBitmapTextWithEffect(const char* str, float x, float y, float z, bool highlight, float r, float g, float b);
+
+// --- [추가] 3D 위치에 텍스트 출력 함수 ---
+void drawBitmapText(const char* str, float x, float y, float z) {
+    glRasterPos3f(x, y, z);
+    while (*str) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, *str);
+        ++str;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// --- [추가] 3차원 위치 벡터 구조체 ---
+struct Vec3 {
+    float x, y, z;
+    Vec3() : x(0), y(0), z(0) {}
+    Vec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+};
+
+// --- [복구] 각 면의 중심 좌표 배열 (전역, Vec3 버전) ---
+// top(4): cyan, bottom(5): magenta (원래대로)
+const Vec3 faceCenterVecs[6] = {
+    Vec3(0.0f,  0.0f,  0.51f), // front (red)
+    Vec3(0.0f,  0.0f, -0.51f), // back (green)
+    Vec3(-0.51f, 0.0f,  0.0f), // left (blue)
+    Vec3(0.51f, 0.0f,  0.0f),  // right (yellow)
+    Vec3(0.0f,  -0.51f, 0.0f),  // bottom (magenta)
+    Vec3(0.0f, 0.51f, 0.0f)   // top (cyan)
+};
+
+// --- [추가] 각 면의 4개 꼭짓점 로컬좌표 배열 ---
+const float faceVertices[6][4][3] = {
+    // front (red)
+    { {-0.5f, -0.5f,  0.5f}, {0.5f, -0.5f,  0.5f}, {0.5f, 0.5f,  0.5f}, {-0.5f, 0.5f,  0.5f} },
+    // back (green)
+    { {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, -0.5f, -0.5f} },
+    // left (blue)
+    { {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, -0.5f} },
+    // right (yellow)
+    { {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, -0.5f, 0.5f} },
+  
+    // bottom (magenta)
+    { {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f} },
+    // top (cyan)
+    { {-0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, -0.5f} }
+};
+
+// --- [추가] 4x4 행렬과 3D 벡터 곱 (OpenGL column-major) ---
+void multMatVec(const float mat[16], const float v[3], float out[3]) {
+    out[0] = mat[0] * v[0] + mat[4] * v[1] + mat[8] * v[2] + mat[12];
+    out[1] = mat[1] * v[0] + mat[5] * v[1] + mat[9] * v[2] + mat[13];
+    out[2] = mat[2] * v[0] + mat[6] * v[1] + mat[10] * v[2] + mat[14];
+}
+
+// --- [추가] 큐브의 변환행렬(회전+이동) 구하기 ---
+void getCubeTransformMatrix(float rotX, float rotY, float rotZ, float posX, float posY, float posZ, float out[16]) {
+    float rotMat[16];
+    getRotationMatrix(rotX, rotY, rotZ, rotMat);
+    // 복사
+    for (int i = 0; i < 16; ++i) out[i] = rotMat[i];
+    // 이동 적용
+    out[12] = posX;
+    out[13] = posY;
+    out[14] = posZ;
+}
+
+// --- [추가] 한 면의 4개 꼭짓점의 월드좌표 구하기 ---
+void getFaceWorldVertices(int faceIdx, float rotX, float rotY, float rotZ, float posX, float posY, float posZ, float outVerts[4][3]) {
+    float mat[16];
+    getCubeTransformMatrix(rotX, rotY, rotZ, posX, posY, posZ, mat);
+    for (int i = 0; i < 4; ++i)
+        multMatVec(mat, faceVertices[faceIdx][i], outVerts[i]);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// 검정색 축 그리기
+void drawBlackAxes(float length = 2.0f) {
+    glLineWidth(2.0f);
+    glColor3f(0, 0, 0);
+    glBegin(GL_LINES);
+    // X축
+    glVertex3f(0, 0, 0);
+    glVertex3f(length, 0, 0);
+    // Y축
+    glVertex3f(0, 0, 0);
+    glVertex3f(0, length, 0);
+    // Z축
+    glVertex3f(0, 0, 0);
+    glVertex3f(0, 0, length);
+    glEnd();
+    glLineWidth(1.0f);
+
+    // --- [추가] 축 라벨링 ---
+    glColor3f(1, 0, 0); // X축: 빨강
+    drawBitmapText("X", length + 0.1f, 0, 0);
+    glColor3f(0, 0.6f, 0); // Y축: 녹색
+    drawBitmapText("Y", 0, length + 0.1f, 0);
+    glColor3f(0, 0, 1); // Z축: 파랑
+    drawBitmapText("Z", 0, 0, length + 0.1f);
+}
+
+// 큰 수평면 그리기 (y축 기준)
+void drawGroundPlane(float size = 10.0f) {
+    glDisable(GL_BLEND);      // 블렌딩 OFF
+    glDisable(GL_LIGHTING);   // 라이팅 OFF (필요시)
+    glColor3f(0.7f, 0.7f, 0.7f); // 더 진한 회색 (원하는 값으로 조정)
+    glBegin(GL_QUADS);
+    glVertex3f(-size, planeY, -size);
+    glVertex3f(size, planeY, -size);
+    glVertex3f(size, planeY, size);
+    glVertex3f(-size, planeY, size);
+    glEnd();
+}
+
+// --- [추가] xy평면(z=0) 시각화 함수 ---
+void drawXYPlane(float size = 10.0f) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(0.2f, 0.8f, 0.2f, 0.18f); // 연녹색, 반투명
+    glBegin(GL_QUADS);
+    glVertex3f(-size, -size, 0.0f);
+    glVertex3f(size, -size, 0.0f);
+    glVertex3f(size, size, 0.0f);
+    glVertex3f(-size, size, 0.0f);
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+// --- [추가] Vec3를 float[3]로 변환하는 함수 ---
+inline void vec3ToArray(const Vec3& v, float out[3]) {
+    out[0] = v.x; out[1] = v.y; out[2] = v.z;
+}
+
+// --- [추가] xy평면 시각화 토글 변수 ---
+bool showXYPlane = true;
+
+
+
+
+// 큐브 그리기 (각 면 색 다르게) + 숫자 추가
+void drawColoredCube(float alpha = 1.0f) {
+    glBegin(GL_QUADS);
+
+    // 앞면 (빨강)
+    glColor4f(1, 0, 0, alpha);
+    glVertex3f(-0.5f, -0.5f, 0.5f);
+    glVertex3f(0.5f, -0.5f, 0.5f);
+    glVertex3f(0.5f, 0.5f, 0.5f);
+    glVertex3f(-0.5f, 0.5f, 0.5f);
+
+    // 뒷면 (초록)
+    glColor4f(0, 1, 0, alpha);
+    glVertex3f(-0.5f, -0.5f, -0.5f);
+    glVertex3f(-0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, -0.5f);
+
+    // 왼쪽면 (파랑)
+    glColor4f(0, 0, 1, alpha);
+    glVertex3f(-0.5f, -0.5f, -0.5f);
+    glVertex3f(-0.5f, -0.5f, 0.5f);
+    glVertex3f(-0.5f, 0.5f, 0.5f);
+    glVertex3f(-0.5f, 0.5f, -0.5f);
+
+    // 오른쪽면 (노랑)
+    glColor4f(1, 1, 0, alpha);
+    glVertex3f(0.5f, -0.5f, -0.5f);
+    glVertex3f(0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, 0.5f, 0.5f);
+    glVertex3f(0.5f, -0.5f, 0.5f);
+
+
+    // 아랫면 (분홍)
+    glColor4f(1, 0, 1, alpha);
+    glVertex3f(-0.5f, -0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, 0.5f);
+    glVertex3f(-0.5f, -0.5f, 0.5f);
+
+    // 윗면 (하늘)
+    glColor4f(0, 1, 1, alpha);
+    glVertex3f(-0.5f, 0.5f, -0.5f);
+    glVertex3f(-0.5f, 0.5f, 0.5f);
+    glVertex3f(0.5f, 0.5f, 0.5f);
+    glVertex3f(0.5f, 0.5f, -0.5f);
+
+    glEnd();
+
+    // --- [수정] 각 면에 숫자 표시 (Vec3 사용) ---
+    glColor3f(0, 0, 0);
+    for (int i = 0; i < 6; ++i) {
+        char num[2] = { '1' + i, 0 };
+        drawBitmapText(num, faceCenterVecs[i].x, faceCenterVecs[i].y, faceCenterVecs[i].z);
+    }
+}
+
+// z=0 평면에 대한 1정사영 행렬 생성
+void getZAxisProjectionMatrix(float projMat[16]) {
+    // z=0 평면에 대한 정사영 행렬
+    // [1 0 0 0]
+    // [0 1 0 0]
+    // [0 0 0 0]
+    // [0 0 0 1]
+    for (int i = 0; i < 16; ++i) projMat[i] = 0.0f;
+    projMat[0] = 1.0f;
+    projMat[5] = 1.0f;
+    projMat[15] = 1.0f;
+}
+
+// --- [추가] 회전행렬 적용 함수 ---
+void getRotationMatrix(float rotX, float rotY, float rotZ, float mat[16]) {
+    // OpenGL column-major order
+    float rx = rotX * 3.1415926f / 180.0f;
+    float ry = rotY * 3.1415926f / 180.0f;
+    float rz = rotZ * 3.1415926f / 180.0f;
+
+    float cx = cos(rx), sx = sin(rx);
+    float cy = cos(ry), sy = sin(ry);
+    float cz = cos(rz), sz = sin(rz);
+
+    // ZYX 순서 회전
+    float m[16] = {
+        cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz, 0,
+        cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz, 0,
+        -sy,   sx * cy,           cx * cy,         0,
+        0,     0,               0,             1
+    };
+    for (int i = 0; i < 16; ++i) mat[i] = m[i];
+}
+
+// --- [추가] x축 회전만 적용하는 회전행렬 생성 함수 ---
+void getXRotationMatrix(float rotX, float mat[16]) {
+    float rx = rotX * 3.1415926f / 180.0f;
+    float cx = cos(rx), sx = sin(rx);
+    // OpenGL column-major
+    float m[16] = {
+        1,    0,     0, 0,
+        0,   cx,   -sx, 0,
+        0,   sx,    cx, 0,
+        0,    0,     0, 1
+    };
+    for (int i = 0; i < 16; ++i) mat[i] = m[i];
+}
+
+// --- [추가] 각 면의 중심 좌표와 면 인덱스 ---
+struct FaceInfo {
+    float center[3];
+    int faceIdx; // 0:front, 1:back, 2:left, 3:right, 4:top, 5:bottom
+    float zDist; // z=0까지의 거리
+};
+
+// --- [추가] 회전행렬 적용 (벡터 변환) ---
+void transformVec(const float mat[16], const float in[3], float out[3]) {
+    out[0] = mat[0] * in[0] + mat[4] * in[1] + mat[8] * in[2];
+    out[1] = mat[1] * in[0] + mat[5] * in[1] + mat[9] * in[2];
+    out[2] = mat[2] * in[0] + mat[6] * in[1] + mat[10] * in[2];
+}
+
+// --- [수정] 모든 면의 중심에서 xy평면(z=0)까지의 거리 기준으로 가장 가까운 3개 면 선택 ---
+void getThreeClosestFaceIndices(float rotX, float rotY, float rotZ, int outIdx[3]) {
+    // 각 면의 중심 좌표(로컬)
+    const float faceCenters[6][3] = {
+        { 0.0f,  0.0f,  0.5f}, // front (red)
+        { 0.0f,  0.0f, -0.5f}, // back (green)
+        {-0.5f,  0.0f,  0.0f}, // left (blue)
+        { 0.5f,  0.0f,  0.0f}, // right (yellow)
+        { 0.0f,  -0.5f,  0.0f}, // bottom (magenta)    
+        { 0.0f, 0.5f,  0.0f}  // top (cyan) 
+    };
+    float rotMat[16];
+    getRotationMatrix(rotX, rotY, rotZ, rotMat);
+
+    struct FaceDist {
+        int idx;
+        float zDist;
+    } dists[6];
+
+    for (int i = 0; i < 6; ++i) {
+        float v[3];
+        transformVec(rotMat, faceCenters[i], v);
+        dists[i].idx = i;
+        dists[i].zDist = std::abs(v[2]); // z=0까지의 거리 (xy평면과의 거리)
+    }
+    // zDist 기준으로 정렬
+    std::sort(dists, dists + 6, [](const FaceDist& a, const FaceDist& b) {
+        return a.zDist < b.zDist;
+        });
+    // 상위 3개 면의 인덱스 반환
+    for (int i = 0; i < 3; ++i) {
+        outIdx[i] = dists[i].idx;
+    }
+}
+
+// --- [수정] 한 면만 그리기 + 숫자 추가 ---
+void drawSingleCubeFace(int faceIdx, float alpha = 1.0f) {
+    glBegin(GL_QUADS);
+    switch (faceIdx) {
+    case 0: // front (red)
+        glColor4f(1, 0, 0, alpha);
+        glVertex3f(-0.5f, -0.5f, 0.5f);
+        glVertex3f(0.5f, -0.5f, 0.5f);
+        glVertex3f(0.5f, 0.5f, 0.5f);
+        glVertex3f(-0.5f, 0.5f, 0.5f);
+        break;
+    case 1: // back (green)
+        glColor4f(0, 1, 0, alpha);
+        glVertex3f(-0.5f, -0.5f, -0.5f);
+        glVertex3f(-0.5f, 0.5f, -0.5f);
+        glVertex3f(0.5f, 0.5f, -0.5f);
+        glVertex3f(0.5f, -0.5f, -0.5f);
+        break;
+    case 2: // left (blue)
+        glColor4f(0, 0, 1, alpha);
+        glVertex3f(-0.5f, -0.5f, -0.5f);
+        glVertex3f(-0.5f, -0.5f, 0.5f);
+        glVertex3f(-0.5f, 0.5f, 0.5f);
+        glVertex3f(-0.5f, 0.5f, -0.5f);
+        break;
+    case 3: // right (yellow)
+        glColor4f(1, 1, 0, alpha);
+        glVertex3f(0.5f, -0.5f, -0.5f);
+        glVertex3f(0.5f, 0.5f, -0.5f);
+        glVertex3f(0.5f, 0.5f, 0.5f);
+        glVertex3f(0.5f, -0.5f, 0.5f);
+        break;
+    case 4: // bottom (magenta)
+        glColor4f(1, 0, 1, alpha);
+        glVertex3f(-0.5f, -0.5f, -0.5f);
+        glVertex3f(0.5f, -0.5f, -0.5f);
+        glVertex3f(0.5f, -0.5f, 0.5f);
+        glVertex3f(-0.5f, -0.5f, 0.5f);
+        break;
+    case 5: // top (cyan)
+        glColor4f(0, 1, 1, alpha);
+        glVertex3f(-0.5f, 0.5f, -0.5f);
+        glVertex3f(-0.5f, 0.5f, 0.5f);
+        glVertex3f(0.5f, 0.5f, 0.5f);
+        glVertex3f(0.5f, 0.5f, -0.5f);
+        break;
+    }
+    glEnd();
+
+    // --- [수정] 해당 면에 숫자 표시 (Vec3 사용) ---
+    glColor3f(0, 0, 0);
+    char num[2] = { '1' + faceIdx, 0 };
+    drawBitmapText(num, faceCenterVecs[faceIdx].x, faceCenterVecs[faceIdx].y, faceCenterVecs[faceIdx].z);
+}
+
+// --- [수정] 모든 축 회전 적용해서 각 면 중심의 월드 좌표 계산 함수 ---
+void getFaceCenterWorldPos(int faceIdx, float rotX, float rotY, float rotZ, float posX, float posY, float posZ, float out[3]) {
+    float mat[16];
+    getCubeTransformMatrix(rotX, rotY, rotZ, posX, posY, posZ, mat);
+    float local[3];
+    vec3ToArray(faceCenterVecs[faceIdx], local);
+    multMatVec(mat, local, out);
+}
+
+// --- [추가] 임의의 점과 xy평면(z=0) 사이의 거리 계산 함수 ---
+float distanceToXYPlane(const float pt[3]) {
+    return std::abs(pt[2]);
+}
+
+// --- [수정] 각 면의 중심과 xy평면(z=0) 사이의 거리 반환 함수 6개 ---
+// top(5): cyan, bottom(4): magenta (원래대로)
+float d_red() {    // front (red)
+    float world[3];
+    getFaceCenterWorldPos(0, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+float d_green() {  // back (green)
+    float world[3];
+    getFaceCenterWorldPos(1, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+float d_blue() {   // left (blue)
+    float world[3];
+    getFaceCenterWorldPos(2, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+float d_yellow() { // right (yellow)
+    float world[3];
+    getFaceCenterWorldPos(3, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+float d_magenta() { // bottom (magenta)
+    float world[3];
+    getFaceCenterWorldPos(4, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+float d_cyan() { // top (cyan)
+    float world[3];
+    getFaceCenterWorldPos(5, rotX, rotY, rotZ, posX, posY, posZ, world);
+    return distanceToXYPlane(world);
+}
+
+// --- [추가] 마우스 휠 확대/축소 핸들러 ---
+void mouseWheel(int wheel, int direction, int x, int y) {
+    // direction: +1(위로 스크롤, 확대), -1(아래로 스크롤, 축소)
+    float zoomStep = 0.5f;
+    if (direction > 0)
+        cameraDistance -= zoomStep;
+    else
+        cameraDistance += zoomStep;
+
+    // 최소/최대값 제한
+    if (cameraDistance < 1.0f) cameraDistance = 1.0f;
+    if (cameraDistance > 30.0f) cameraDistance = 30.0f;
+
+    glutPostRedisplay();
+}
+
+// 카메라 설정
+void setupCamera() {
+    float radX = cameraAngleX * 3.1415926f / 180.0f;
+    float radY = cameraAngleY * 3.1415926f / 180.0f;
+
+    float camX = cameraDistance * cos(radX) * sin(radY);
+    float camY = cameraDistance * sin(radX);
+    float camZ = cameraDistance * cos(radX) * cos(radY);
+
+    gluLookAt(camX, camY, camZ, 0, 0, 0, 0, 1, 0);
+}
+
+// --- [삭제] 디버그 및 중심점 시각화 함수 제거 ---
+
+// --- [대표적 방법] 면-평면 거리: 중심점의 z좌표 절댓값 사용 ---
+
+float faceCenterDistToXY(int faceIdx, float rotX, float rotY, float rotZ, float posX, float posY, float posZ) {
+    float world[3];
+    getFaceCenterWorldPos(faceIdx, rotX, rotY, rotZ, posX, posY, posZ, world);
+    
+    return std::abs(world[2]);
+}
+
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glLoadIdentity();
+
+    setupCamera();
+
+    // 수평면
+    drawGroundPlane(10.0f);
+
+    // xy평면 시각화 토글
+    if (showXYPlane)
+        drawXYPlane(10.0f);
+
+    // 검정색 축
+    drawBlackAxes(2.0f);
+
+    // 1. 원래 큐브(정사영 전)를 먼저 그림
+    glPushMatrix();
+    glTranslatef(posX, posY, posZ);
+    glRotatef(rotX, 1, 0, 0);
+    glRotatef(rotY, 0, 1, 0);
+    glRotatef(rotZ, 0, 0, 1);
+    drawColoredCube(1.0f);
+    glPopMatrix();
+
+    // --- [삭제] 중심점 시각화 및 디버그 출력 호출 제거 ---
+
+    // --- [대표적 방법] 중심점 z좌표 절댓값 기준 정렬 ---
+    float projMat[16];
+    getZAxisProjectionMatrix(projMat);
+
+    struct FaceAlpha {
+        int idx;
+        float centerDist;
+    } faceAlpha[6];
+
+    for (int i = 0; i < 6; ++i) {
+        faceAlpha[i].idx = i;
+        faceAlpha[i].centerDist = faceCenterDistToXY(i, rotX, rotY, rotZ, posX, posY, posZ);
+    }
+    // 가까운 면이 먼저 그려져 위에 쌓임 (정렬 방향 변경)
+    std::sort(faceAlpha, faceAlpha + 6, [](const FaceAlpha& a, const FaceAlpha& b) {
+        return a.centerDist < b.centerDist;
+        });
+
+    glPushMatrix();
+    glMultMatrixf(projMat);
+    glTranslatef(posX, posY, posZ);
+    glRotatef(rotX, 1, 0, 0);
+    glRotatef(rotY, 0, 1, 0);
+    glRotatef(rotZ, 0, 0, 1);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+
+    for (int i = 0; i < 6; ++i) {
+        float alpha = 0.35f + 0.65f * (1.0f - float(i) / 5.0f);
+        int faceIdx = faceAlpha[i].idx;
+
+        // --- cyan(4)과 magenta(5)를 안 바꿈 ---
+        if (faceIdx == 4) faceIdx = 4;
+        else if (faceIdx == 5) faceIdx = 5;
+
+        drawSingleCubeFace(faceAlpha[i].idx, alpha);
+    }
+    glDisable(GL_BLEND);
+    glEnable(GL_LIGHTING);
+    glPopMatrix();
+
+
+
+
+
+
+
+
+
+
+
+	// --- [추가] 강조 효과가 있는 텍스트 출력 ---
+    // --- [유지] 각 면의 중심과 xy평면 사이의 거리 표시 (오른쪽에) ---
+    float x = 5.0f;
+    float y0 = 2.5f;
+    float dy = -0.5f;
+    char buf[64];
+
+    float dvals[6] = { d_red(), d_green(), d_blue(), d_yellow(), d_magenta(), d_cyan() };
+    bool highlight[6] = { false, false, false, false, false, false };
+    highlight[0] = dvals[0] <= dvals[1];
+    highlight[1] = dvals[1] < dvals[0];
+    highlight[2] = dvals[2] <= dvals[3];
+    highlight[3] = dvals[3] < dvals[2];
+    highlight[4] = dvals[4] <= dvals[5];
+    highlight[5] = dvals[5] < dvals[4];
+
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_red     = %.3f", dvals[0]), buf),
+        x, y0 + dy * 0, 0, highlight[0], 1, 0, 0);
+
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_green   = %.3f", dvals[1]), buf),
+        x, y0 + dy * 1, 0, highlight[1], 0, 1, 0);
+
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_blue    = %.3f", dvals[2]), buf),
+        x, y0 + dy * 2, 0, highlight[2], 0, 0, 1);
+
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_yellow  = %.3f", dvals[3]), buf),
+        x, y0 + dy * 3, 0, highlight[3], 1, 1, 0);
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_magenta = %.3f", dvals[5]), buf),
+        x, y0 + dy * 5, 0, highlight[5], 1, 0, 1);
+    drawBitmapTextWithEffect(
+        (snprintf(buf, sizeof(buf), "d_cyan    = %.3f", dvals[4]), buf),
+        x, y0 + dy * 4, 0, highlight[4], 0, 1, 1);
+
+
+    glutSwapBuffers();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// --- [추가] 강조 효과가 있는 텍스트 출력 함수 (배경 사각형) ---
+void drawBitmapTextWithEffect(const char* str, float x, float y, float z, bool highlight, float r, float g, float b) {
+    if (highlight) {
+        // 배경 사각형 그리기
+        float paddingX = 0.12f, paddingY = 0.13f;
+        float width = 2.2f * paddingX, height = 1.2f * paddingY;
+        glColor3f(1.0f, 0.95f, 0.7f); // 밝은 노란색 계열
+        glBegin(GL_QUADS);
+        glVertex3f(x - paddingX, y - paddingY, z);
+        glVertex3f(x + width, y - paddingY, z);
+        glVertex3f(x + width, y + height, z);
+        glVertex3f(x - paddingX, y + height, z);
+        glEnd();
+    }
+    glColor3f(r, g, b);
+    drawBitmapText(str, x, y, z);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// 키보드 입력
+void keyboard(unsigned char key, int x, int y) {
+    float moveStep = 0.2f;
+    float rotStep = 10.0f;
+    switch (key) {
+    case 'w': posZ += moveStep; break;
+    case 's': posZ -= moveStep; break;
+    case 'a': posX += moveStep; break;
+    case 'd': posX -= moveStep; break;
+    case 'q': posY += moveStep; break;
+    case 'e': posY -= moveStep; break;
+        // --- [수정] 회전 방향을 OpenGL 축 기준에 맞게 조정 ---
+    case 'x': rotX += rotStep; break;   // x축(오른쪽) 기준으로 pitch up (위로)
+    case 'X': rotX -= rotStep; break;   // x축(오른쪽) 기준으로 pitch down (아래로)
+    case 'c': rotY += rotStep; break;   // y축(위) 기준으로 yaw left (왼쪽으로)
+    case 'C': rotY -= rotStep; break;   // y축(위) 기준으로 yaw right (오른쪽으로)
+    case 'z': rotZ += rotStep; break;   // z축(화면 밖) 기준으로 roll CCW (왼쪽으로)
+    case 'Z': rotZ -= rotStep; break;   // z축(화면 밖) 기준으로 roll CW (오른쪽으로)
+    case 'p': // --- [추가] 'p' 키로 xy평면 시각화 토글 ---
+        showXYPlane = !showXYPlane;
+        glutPostRedisplay();
+        break;
+    case 27: std::exit(0); break;
+    default: break;
+    }
+    glutPostRedisplay();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// 마우스 버튼 이벤트
+// 대부분의 운영체제/드라이버에서 터치패드의 두 손가락 핀치(확대/축소) 제스처는
+// button 3(위로 스크롤/확대), button 4(아래로 스크롤/축소) 마우스 이벤트로 전달됩니다.
+// 따라서 아래 구현으로 일반적인 터치패드 핀치 확대/축소가 지원됩니다.
+void mouseButton(int button, int state, int x, int y) {
+    // --- [추가] 터치패드 핀치(확대/축소) 제스처 지원 ---
+    // 일부 시스템에서는 button 3(위로 스크롤/확대), button 4(아래로 스크롤/축소)로 인식됨
+    if (state == GLUT_DOWN) {
+        float zoomStep = 0.5f;
+        if (button == 3) { // 터치패드/마우스 휠 위 (확대)
+            cameraDistance -= zoomStep;
+            if (cameraDistance < 1.0f) cameraDistance = 1.0f;
+            glutPostRedisplay();
+            return;
+        }
+        if (button == 4) { // 터치패드/마우스 휠 아래 (축소)
+            cameraDistance += zoomStep;
+            if (cameraDistance > 30.0f) cameraDistance = 30.0f;
+            glutPostRedisplay();
+            return;
+        }
+    }
+    // ...기존 코드...
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) {
+            mouseDragging = true;
+            prevMouseX = x;
+            prevMouseY = y;
+        }
+        else if (state == GLUT_UP) {
+            mouseDragging = false;
+        }
+    }
+}
+
+// 마우스 움직임 (드래그 중)
+void mouseMotion(int x, int y) {
+    if (!mouseDragging) return;
+
+    int dx = x - prevMouseX;
+    int dy = y - prevMouseY;
+
+    cameraAngleY += dx * 0.5f;
+    cameraAngleX += dy * 0.5f;
+
+    // 위아래 각도 제한
+    if (cameraAngleX > 89.0f) cameraAngleX = 89.0f;
+    if (cameraAngleX < -89.0f) cameraAngleX = -89.0f;
+
+    prevMouseX = x;
+    prevMouseY = y;
+
+    glutPostRedisplay();
+}
+
+// 윈도우 리사이즈
+void reshape(int w, int h) {
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+
+    // 종횡비(aspect ratio) 계산
+    float aspect = (float)w / (float)h;
+    float viewSize = 7.0f; // 원하는 씬 크기(조정 가능)
+
+    if (aspect >= 1.0f) {
+        // 가로가 더 넓을 때
+        glOrtho(-viewSize * aspect, viewSize * aspect, -viewSize, viewSize, -100.0, 100.0);
+    }
+    else {
+        // 세로가 더 넓을 때
+        glOrtho(-viewSize, viewSize, -viewSize / aspect, viewSize / aspect, -100.0, 100.0);
+    }
+
+    glMatrixMode(GL_MODELVIEW);
+}
+
+// 초기화
+void init() {
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.95f, 0.95f, 0.95f, 1.0f);
+}
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    glutInitWindowSize(800, 600);
+    glutCreateWindow("Cube Z축 1정사영");
+
+    init();
+
+    glutDisplayFunc(display);
+    glutReshapeFunc(reshape);
+    glutKeyboardFunc(keyboard);
+    glutMouseFunc(mouseButton);
+    glutMotionFunc(mouseMotion);
+
+    // --- [추가] 마우스 휠 콜백 등록 (freeglut 전용) ---
+#ifdef FREEGLUT
+    glutMouseWheelFunc(mouseWheel);
+#endif
+
+    glutMainLoop();
+    return 0;
+}
