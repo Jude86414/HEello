@@ -1,0 +1,145 @@
+//고정점
+#include <GL/freeglut.h>
+#include <cmath>
+#include <vector>
+
+// 중력, 진자 길이, 질량, 시간 간격
+const float g = 9.81f;
+const float L1 = 0.5f; // 길이 줄임
+const float L2 = 0.5f; // 길이 줄임
+const float m1 = 1.0f;
+const float m2 = 1.0f;
+const float dt = 0.005f;
+
+// 진자 구조체
+struct DoublePendulum {
+    float theta1, theta2;
+    float omega1, omega2;
+    std::vector<std::pair<float, float>> trail;
+    float r, g, b; // 색상
+    //float offsetX, offsetY; // 위치 오프셋 제거
+};
+
+DoublePendulum pendulums[4];
+
+// 초기값 세팅 함수
+void initPendulums() {
+    pendulums[0] = { 1.5f, 1.5f, 0.0f, 0.0f, {}, 1.0f, 0.0f, 0.0f };      // 빨강
+    pendulums[1] = { 1.505f, 1.5f, 0.0f, 0.0f, {}, 0.0f, 1.0f, 0.0f };    // 초록
+    pendulums[2] = { 1.495f, 1.5f, 0.0f, 0.0f, {}, 0.0f, 0.0f, 1.0f };      // 파랑
+    pendulums[3] = { 1.498f, 1.5f, 0.0f, 0.0f, {}, 1.0f, 0.5f, 0.0f };     // 주황
+}
+
+void updatePhysics(DoublePendulum& p) {
+    float delta = p.theta2 - p.theta1;
+
+    float den1 = (m1 + m2) * L1 - m2 * L1 * cos(delta) * cos(delta);
+    float a1 = (m2 * L1 * p.omega1 * p.omega1 * sin(delta) * cos(delta) +
+        m2 * g * sin(p.theta2) * cos(delta) +
+        m2 * L2 * p.omega2 * p.omega2 * sin(delta) -
+        (m1 + m2) * g * sin(p.theta1)) / den1;
+
+    float den2 = (L2 / L1) * den1;
+    float a2 = (-m2 * L2 * p.omega2 * p.omega2 * sin(delta) * cos(delta) +
+        (m1 + m2) * g * sin(p.theta1) * cos(delta) -
+        (m1 + m2) * L1 * p.omega1 * p.omega1 * sin(delta) -
+        (m1 + m2) * g * sin(p.theta2)) / den2;
+
+    p.omega1 += a1 * dt;
+    p.omega2 += a2 * dt;
+    p.theta1 += p.omega1 * dt;
+    p.theta2 += p.omega2 * dt;
+}
+
+void drawPendulum(const DoublePendulum& p) {
+    // 첫 번째 진자 위치
+    float x1 = L1 * sin(p.theta1);
+    float y1 = -L1 * cos(p.theta1);
+
+    // 두 번째 진자 위치
+    float x2 = x1 + L2 * sin(p.theta2);
+    float y2 = y1 - L2 * cos(p.theta2);
+
+    // 궤적 그리기
+    glLineWidth(1.5f);
+    glColor3f(p.r * 0.5f, p.g * 0.5f, p.b * 0.5f); // 진한 색 대비 절반 밝기
+    glBegin(GL_LINE_STRIP);
+    for (auto& pos : p.trail) {
+        glVertex2f(pos.first, pos.second);
+    }
+    glEnd();
+
+    // 진자 줄 그리기
+    glLineWidth(3.0f);
+    glColor3f(p.r, p.g, p.b);
+    glBegin(GL_LINES);
+    glVertex2f(0.0f, 0.0f);
+    glVertex2f(x1, y1);
+    glVertex2f(x1, y1);
+    glVertex2f(x2, y2);
+    glEnd();
+
+    // 추 그리기
+    glPointSize(10.0f);
+    glBegin(GL_POINTS);
+    glColor3f(p.r, p.g, p.b);
+    glVertex2f(x1, y1);
+    glVertex2f(x2, y2);
+    glEnd();
+}
+
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // 위치 오프셋 제거, 모든 진자가 원점에 고정
+    for (int i = 0; i < 4; i++) {
+        glPushMatrix();
+        drawPendulum(pendulums[i]);
+        glPopMatrix();
+    }
+
+    glutSwapBuffers();
+}
+
+void timer(int value) {
+    for (int i = 0; i < 4; i++) {
+        updatePhysics(pendulums[i]);
+
+        // 진자 끝점 좌표 계산
+        float x1 = L1 * sin(pendulums[i].theta1);
+        float y1 = -L1 * cos(pendulums[i].theta1);
+        float x2 = x1 + L2 * sin(pendulums[i].theta2);
+        float y2 = y1 - L2 * cos(pendulums[i].theta2);
+
+        // 궤적에 추가 (상대 좌표 기준)
+        pendulums[i].trail.push_back({ x2, y2 });
+        if (pendulums[i].trail.size() > 500) {
+            pendulums[i].trail.erase(pendulums[i].trail.begin());
+        }
+    }
+    glutPostRedisplay();
+    glutTimerFunc(16, timer, 0);
+}
+
+void init() {
+    glClearColor(1, 1, 1, 1);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluOrtho2D(-1.5, 1.5, -1.5, 1.5); // 좌표 범위 축소
+    glMatrixMode(GL_MODELVIEW);
+}
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
+    glutInitWindowSize(900, 900);
+    glutCreateWindow("4 Double Pendulums at the Same Origin");
+
+    init();
+    initPendulums();
+
+    glutDisplayFunc(display);
+    glutTimerFunc(0, timer, 0);
+    glutMainLoop();
+    return 0;
+}
