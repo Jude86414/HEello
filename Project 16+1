@@ -1,0 +1,287 @@
+//Project 16+1
+//첫 째, 경사면을 그려기2.
+#include <GL/glut.h>
+#include <cmath>
+#include <vector>
+
+
+const float PI = 3.14159f;
+const float g = 9.81f;
+const float inclineAngle = 30.0f;
+const float inclineRad = inclineAngle * PI / 180.0f;
+const float deltaTime = 0.016f; // 60fps
+
+// 카메라 회전 제어
+float camYaw = 30.0f, camPitch = 20.0f;
+float camDistance = 8.0f;
+int lastMouseX, lastMouseY;
+bool mouseDown = false;
+
+// 물체 구조체
+struct RigidBody {
+    float x, y, z;
+    float vx, vy;
+    float angle;
+    float angularVel;
+    float mass;
+
+    float radius;
+
+    bool isSphere;
+    bool hasFriction;
+};
+
+std::vector<RigidBody> objects;
+
+bool isRunning = true;      // 시뮬레이션 실행 여부
+float timeScale = 0.5f;     // 시간 느리게 (1.0 = 정상속도, 0.5 = 반속도)
+
+
+void drawInclinedPlane() {
+    glPushMatrix();
+    glRotatef(-inclineAngle, 0, 0, 1);
+
+    glColor3f(0.8f, 0.8f, 0.8f);
+
+    float sizeX = 4.0f;  // 가로 크기 (원래 2.0 * 2)
+    float sizeZ = 2.0f;  // 세로 크기 (원래 1.0 * 2)
+
+    glBegin(GL_QUADS);
+    glVertex3f(-sizeX, 0.0f, -sizeZ);
+    glVertex3f(sizeX, 0.0f, -sizeZ);
+    glVertex3f(sizeX, 0.0f, sizeZ);
+    glVertex3f(-sizeX, 0.0f, sizeZ);
+    glEnd();
+
+    glPopMatrix();
+}
+
+
+void drawText3D(float x, float y, float z, const char* text) {
+    glRasterPos3f(x, y, z);
+    for (const char* c = text; *c != '\0'; ++c) {
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
+    }
+}
+
+
+void drawAxes(float length = 1.0f) {
+    glLineWidth(2.0f);
+    glBegin(GL_LINES);
+
+    // X축 - 빨강
+    glColor3f(1.0f, 0.0f, 0.0f);  // Red
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(length, 0.0f, 0.0f);
+
+    // Y축 - 초록
+    glColor3f(0.0f, 1.0f, 0.0f);  // Green
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(0.0f, length, 0.0f);
+
+    // Z축 - 파랑
+    glColor3f(0.0f, 0.0f, 1.0f);  // Blue
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(0.0f, 0.0f, length);
+
+    glEnd();
+}
+
+
+void drawBody(RigidBody& obj) {
+    glPushMatrix();
+
+
+    // 경사면 법선 방향으로 반지름만큼 이동 (접촉점 맞추기)
+    float normalX = -sin(inclineRad);
+    float normalY = cos(inclineRad);
+
+    float contactOffsetX = obj.radius * normalX;
+    float contactOffsetY = obj.radius * normalY;
+
+
+    float offsetX = obj.radius * normalX;
+    float offsetY = obj.radius * normalY;
+
+    float posX = obj.x * cos(inclineRad) + offsetX;
+    float posY = obj.x * sin(inclineRad) + offsetY;
+
+    glTranslatef(-posX, posY, obj.z);
+
+    // 경사면 방향에 따라 변환된 좌표로 이동
+    float inclineOffsetX = obj.x * cos(inclineRad);
+    float inclineOffsetY = obj.x * sin(inclineRad);
+
+    glTranslatef(-inclineOffsetX, inclineOffsetY, obj.z);
+
+    char buf[64];
+    sprintf_s(buf, "v = %.2f m/s", obj.vx);
+    glColor3f(0.0f, 0.0f, 0.0f);  // 검정 텍스트
+    drawText3D(0.0f, 0.3f, 0.0f, buf);  // 물체 위에 출력
+
+
+    // 물체 자체도 경사면 방향으로 회전
+    glRotatef(-inclineAngle, 0, 0, 1);
+    glRotatef(obj.angle * 180.0f / PI, 0, 0, 1);  // 구체 회전
+
+    // 물체 렌더링
+    if (obj.isSphere) {
+        glColor3f(0.2f, 0.6f, 1.0f);
+        glutSolidSphere(obj.radius, 20, 20);
+    }
+    else {
+        glColor3f(1.0f, 0.4f, 0.4f);
+        glutSolidCube(obj.radius * 2);
+    }
+
+    // 방향 벡터 시각화 (경사면 방향 화살표)
+    glBegin(GL_LINES);
+    glColor3f(1.0f, 1.0f, 0.0f);  // 노란색
+    glVertex3f(0.0f, 0.0f, 0.0f);
+    glVertex3f(0.2f, 0.0f, 0.0f);  // 경사면 축(x') 방향
+    glEnd();
+    glPopMatrix();
+}
+
+
+// 물리 업데이트 (경사면 방향으로만 작용)
+void updatePhysics(RigidBody& obj) {
+    float sinTheta = sin(inclineRad);
+    float cosTheta = cos(inclineRad);
+    float a;
+
+    if (obj.isSphere) {
+        if (obj.hasFriction) {
+            a = -(5.0f / 7.0f) * g * sinTheta;
+            obj.angularVel += (5.0f / (2.0f * obj.radius)) * a * deltaTime;
+        }
+        else {
+            a = -g * sinTheta;
+        }
+    }
+    else {
+        float mu = 0.15f;
+        float velocitySign = (obj.vx >= 0.0f) ? -1.0f : 1.0f;
+        a = -g * sinTheta + velocitySign * mu * g * cosTheta;
+
+    }
+
+    obj.vx += a * deltaTime * timeScale;
+    obj.x += obj.vx * deltaTime * timeScale;
+    obj.angle += obj.angularVel * deltaTime * timeScale;
+}
+
+void display() {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glLoadIdentity();
+
+    float radYaw = camYaw * PI / 180.0f;
+    float radPitch = camPitch * PI / 180.0f;
+    float eyeX = camDistance * cos(radPitch) * sin(radYaw);
+    float eyeY = camDistance * sin(radPitch);
+    float eyeZ = camDistance * cos(radPitch) * cos(radYaw);
+    gluLookAt(eyeX, eyeY, eyeZ, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+
+    drawAxes(1.0f);
+    drawInclinedPlane();
+
+    for (auto& obj : objects) {
+        drawBody(obj);
+        if (isRunning) updatePhysics(obj);  // 실행 중일 때만 물리 계산
+    }
+
+    glutSwapBuffers();
+}
+
+void resetSimulation() {
+    for (auto& obj : objects) {
+        obj.x = 0.0f;
+        obj.vx = 0.0f;
+        obj.angle = 0.0f;
+        obj.angularVel = 0.0f;
+    }
+}
+
+
+void timer(int) {
+    glutPostRedisplay();
+    glutTimerFunc(16, timer, 0);
+}
+
+// 마우스 입력 처리
+void mouse(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) {
+            mouseDown = true;
+            lastMouseX = x;
+            lastMouseY = y;
+        }
+        else {
+            mouseDown = false;
+        }
+    }
+}
+
+void keyboard(unsigned char key, int x, int y) {
+    if (key == ' ' || key == 's') {
+        isRunning = !isRunning; // 시작/정지 토글
+    }
+    else if (key == '+') {
+        timeScale *= 2.0f;
+        if (timeScale > 4.0f) timeScale = 4.0f;
+    }
+    else if (key == '-') {
+        timeScale *= 0.5f;
+        if (timeScale < 0.1f) timeScale = 0.1f;
+    }
+    else if (key == 'r') {
+        resetSimulation(); //  r 키로 리셋
+    }
+}
+
+
+// 마우스 드래그 시 회전
+void motion(int x, int y) {
+    if (mouseDown) {
+        int dx = x - lastMouseX;
+        int dy = y - lastMouseY;
+        camYaw += dx * 0.5f;
+        camPitch += dy * 0.5f;
+        if (camPitch > 89.0f) camPitch = 89.0f;
+        if (camPitch < -89.0f) camPitch = -89.0f;
+        lastMouseX = x;
+        lastMouseY = y;
+        glutPostRedisplay();
+    }
+}
+
+void initScene() {
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(1, 1, 1, 1);
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, 1.25, 1.0, 100.0);
+    glMatrixMode(GL_MODELVIEW);
+
+    // 초기 위치는 경사면 위에 띄워놓기 (x는 경사면 좌표축 기준)
+    objects.push_back({ -1.5f, 0.0f, -0.6f, 0, 0, 0, 0, 1.0f, 0.15f, true, true });  // 회전하는 구
+    objects.push_back({ -1.5f, 0.0f,  0.0f, 0, 0, 0, 0, 1.0f, 0.15f, true, false }); // 미끄러지는 구
+    objects.push_back({ -1.5f, 0.0f,  0.6f, 0, 0, 0, 0, 1.0f, 0.15f, false, true }); // 큐브
+}
+
+int main(int argc, char** argv) {
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
+    glutInitWindowSize(1000, 800);
+    glutCreateWindow("3D 경사면 시뮬레이션 - 구와 큐브");
+
+    initScene();
+    glutDisplayFunc(display);
+    glutTimerFunc(0, timer, 0);
+    glutKeyboardFunc(keyboard);  // 키보드 입력 등록
+    glutMouseFunc(mouse);
+    glutMotionFunc(motion);
+    glutMainLoop();
+    return 0;
+}
